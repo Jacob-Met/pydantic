@@ -30,9 +30,9 @@ pub(crate) struct SerializationState<'py> {
     field_name: Option<Bound<'py, PyString>>,
     /// Inside unions, checks are applied to attempt to select a preferred branch
     pub check: SerCheck,
-    /// The selected tagged union value and its discriminator keys. Checking identity
-    /// keeps this exemption from default exclusion from leaking into nested models.
-    pub preserved_discriminator: Option<(Bound<'py, PyAny>, Vec<String>)>,
+    /// Object/key pairs along the selected tagged-union discriminator path. Checking
+    /// identity prevents the exemption from leaking into unrelated nested objects.
+    pub preserved_discriminator: Option<Vec<(Bound<'py, PyAny>, String)>>,
     include_exclude: IncludeExclude<'py>,
     /// Global settings for the serialization process
     pub extra: Extra<'py>,
@@ -92,7 +92,7 @@ impl<'py> SerializationState<'py> {
     pub fn is_preserved_discriminator(&self, model: &Bound<'py, PyAny>, key: &str) -> bool {
         self.preserved_discriminator
             .as_ref()
-            .is_some_and(|(target, names)| target.is(model) && names.iter().any(|name| name == key))
+            .is_some_and(|entries| entries.iter().any(|(target, name)| target.is(model) && name == key))
     }
 }
 

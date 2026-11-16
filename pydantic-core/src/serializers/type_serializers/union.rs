@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use crate::build_tools::py_schema_err;
 use crate::common::union::{Discriminator, SMALL_UNION_THRESHOLD};
 use crate::definitions::DefinitionsBuilder;
+use crate::lookup_key::{LookupPath, PathItem};
 use crate::serializers::PydanticSerializationUnexpectedValue;
 use crate::serializers::SerializationState;
 use crate::serializers::extra::IncludeExclude;
@@ -235,27 +236,66 @@ impl TypeSerializer for TaggedUnionSerializer {
 }
 
 impl TaggedUnionSerializer {
-    fn get_discriminator_value<'py>(&self, value: &Bound<'py, PyAny>) -> Option<Bound<'py, PyAny>> {
+    fn get_discriminator_value<'a, 'py>(
+        &'a self,
+        value: &Bound<'py, PyAny>,
+    ) -> Option<(Bound<'py, PyAny>, Option<&'a LookupPath>)> {
         let py = value.py();
         match &*self.discriminator {
             Discriminator::LookupPaths(lookup_paths) => {
-                // FIXME: should we be emitting warnings for failed discriminator lookups?
-
-                // we're pretty lax here, we allow either dict[key] or object.key, as we very well could
-                // be doing a discriminator lookup on a typed dict, and there's no good way to check that
-                // at this point. we could be more strict and only do this in lax mode...
+                // Keep the successful path, so we preserve exactly the fields needed
+                // to look the tag up again after serialization.
                 if let Ok(value_dict) = value.cast::<PyDict>() {
-                    lookup_paths
-                        .iter()
-                        .find_map(|lookup_key| lookup_key.py_get_dict_item(value_dict).ok().flatten())
+                    lookup_paths.iter().find_map(|path| {
+                        path.py_get_dict_item(value_dict)
+                            .ok()
+                            .flatten()
+                            .map(|tag| (tag, Some(path)))
+                    })
                 } else {
-                    lookup_paths
-                        .iter()
-                        .find_map(|lookup_key| lookup_key.simple_py_get_attr(value).ok().flatten())
+                    lookup_paths.iter().find_map(|path| {
+                        path.simple_py_get_attr(value)
+                            .ok()
+                            .flatten()
+                            .map(|tag| (tag, Some(path)))
+                    })
                 }
             }
-            Discriminator::Function(func) => func.bind(py).call1((value,)).ok(),
+            Discriminator::Function(func) => func.bind(py).call1((value,)).ok().map(|tag| (tag, None)),
         }
+    }
+
+    fn preserved_discriminator_path<'py>(
+        &self,
+        value: &Bound<'py, PyAny>,
+        path: &LookupPath,
+    ) -> Vec<(Bound<'py, PyAny>, String)> {
+        let is_dict = value.cast::<PyDict>().is_ok();
+        let mut entries = vec![(value.clone(), path.first_key().to_owned())];
+        let first = if let Ok(dict) = value.cast::<PyDict>() {
+            dict.get_item(path.first_key()).ok().flatten()
+        } else {
+            value.getattr_opt(path.first_key()).ok().flatten()
+        };
+        let Some(mut current) = first else {
+            return Vec::new();
+        };
+
+        for item in path.rest() {
+            if let PathItem::S(key) = item {
+                entries.push((current.clone(), key.0.to_string()));
+            }
+            let next = if is_dict {
+                item.py_get_item(&current)
+            } else {
+                item.py_get_attrs(&current).ok().flatten()
+            };
+            let Some(next) = next else {
+                return Vec::new();
+            };
+            current = next;
+        }
+        entries
     }
 
     fn tagged_union_serialize<'py, S>(
@@ -266,10 +306,10 @@ impl TaggedUnionSerializer {
         mut selector: impl FnMut(&CombinedSerializer, &mut SerializationState<'py>) -> PyResult<S>,
         state: &mut SerializationState<'py>,
     ) -> PyResult<Option<S>> {
-        let choice = if let Some(tag) = self.get_discriminator_value(value)
+        let (choice, lookup_path) = if let Some((tag, path)) = self.get_discriminator_value(value)
             && let Some(&serializer_index) = self.lookup.get(&tag)?
         {
-            &self.choices.choices[serializer_index]
+            (&self.choices.choices[serializer_index], path)
         } else {
             // No tag found, fall back to left-to-right inference
             if in_top_level_union(state) {
@@ -283,17 +323,7 @@ impl TaggedUnionSerializer {
         // Match the selected object by identity so nested fields cannot inherit it.
         let preserved_discriminator =
             if state.extra.exclude_defaults || state.extra.exclude_unset || state.extra.exclude_none {
-                match &*self.discriminator {
-                    Discriminator::LookupPaths(paths) => Some((
-                        value.clone(),
-                        paths
-                            .iter()
-                            .filter(|path| path.rest().is_empty())
-                            .map(|path| path.first_key().to_owned())
-                            .collect(),
-                    )),
-                    Discriminator::Function(_) => None,
-                }
+                lookup_path.map(|path| self.preserved_discriminator_path(value, path))
             } else {
                 None
             };

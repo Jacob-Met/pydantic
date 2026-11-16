@@ -1512,6 +1512,7 @@ def test_model_serializer_when_used_fallback_respects_include_exclude() -> None:
         assert m.model_dump(include={'a'}) == {'a': 1}
         assert m.model_dump(mode='json', exclude={'b'}) == {'ser': True}
 
+
 def test_tagged_union_none_discriminator_alias_and_root_adapter() -> None:
     from typing import Annotated, Literal
 
@@ -1660,6 +1661,119 @@ def test_tagged_union_discriminator_alias_and_nested_defaults() -> None:
             assert value.model_dump(**options) == expected
             assert value.model_dump(mode='json', **options) == expected
             assert Envelope.model_validate_json(value.model_dump_json(**options)) == value
+
+
+def test_tagged_union_nested_discriminator_path_survives_exclusions() -> None:
+    """A defaulted nested discriminator must remain available to select the union variant."""
+    from typing import Literal
+
+    from pydantic_core import SchemaSerializer, SchemaValidator, core_schema
+
+    class MetaA(BaseModel):
+        kind: Literal['a'] = 'a'
+        other: int = 0
+
+    class MetaB(BaseModel):
+        kind: Literal['b'] = 'b'
+        other: int = 0
+
+    class A(BaseModel):
+        meta: MetaA = Field(default_factory=MetaA)
+        other: int = 0
+
+    class B(BaseModel):
+        meta: MetaB = Field(default_factory=MetaB)
+        other: int = 0
+
+    schema = core_schema.tagged_union_schema(
+        {'a': A.__pydantic_core_schema__, 'b': B.__pydantic_core_schema__},
+        discriminator=[['meta', 'kind']],
+    )
+    serializer = SchemaSerializer(schema)
+    validator = SchemaValidator(schema)
+
+    for instance, tag in [(A(), 'a'), (B(), 'b')]:
+        for exclusion in ('exclude_defaults', 'exclude_unset'):
+            options = {exclusion: True}
+            expected = {'meta': {'kind': tag}}
+            assert serializer.to_python(instance, **options) == expected
+            assert serializer.to_python(instance, mode='json', **options) == expected
+            assert json.loads(serializer.to_json(instance, **options)) == expected
+            assert validator.validate_json(serializer.to_json(instance, **options)) == instance
+            assert serializer.to_python(instance, exclude={'meta': {'kind'}}, **options) == {'meta': {}}
+            assert serializer.to_python(instance, exclude={'meta'}, **options) == {}
+
+
+def test_tagged_union_nested_discriminator_alias_roundtrip() -> None:
+    from typing import Literal
+
+    from pydantic_core import SchemaSerializer, SchemaValidator, core_schema
+
+    class MetaA(BaseModel):
+        kind: Literal['a'] = Field('a', validation_alias='TYPE', serialization_alias='TYPE')
+        other: int = 0
+
+    class MetaB(BaseModel):
+        kind: Literal['b'] = Field('b', validation_alias='TYPE', serialization_alias='TYPE')
+        other: int = 0
+
+    class A(BaseModel):
+        meta: MetaA = Field(default_factory=MetaA)
+
+    class B(BaseModel):
+        meta: MetaB = Field(default_factory=MetaB)
+
+    schema = core_schema.tagged_union_schema(
+        {'a': A.__pydantic_core_schema__, 'b': B.__pydantic_core_schema__},
+        discriminator=[['meta', 'kind'], ['meta', 'TYPE']],
+    )
+    serializer = SchemaSerializer(schema)
+    validator = SchemaValidator(schema)
+    for instance, tag in ((A(), 'a'), (B(), 'b')):
+        for exclusion in ('exclude_defaults', 'exclude_unset'):
+            for alias in (False, True):
+                options = {exclusion: True, 'by_alias': alias}
+                expected = {'meta': {'TYPE' if alias else 'kind': tag}}
+                assert serializer.to_python(instance, **options) == expected
+                assert json.loads(serializer.to_json(instance, **options)) == expected
+                assert validator.validate_json(serializer.to_json(instance, **options)) == instance
+
+
+def test_tagged_union_nested_dict_discriminator_roundtrip() -> None:
+    from pydantic_core import SchemaSerializer, SchemaValidator
+    from pydantic_core import core_schema as cs
+
+    choices = {}
+    for tag in ('a', 'b'):
+        meta_schema = cs.typed_dict_schema(
+            {
+                'kind': cs.typed_dict_field(
+                    cs.with_default_schema(cs.literal_schema([tag]), default=tag), required=False
+                ),
+                'extra': cs.typed_dict_field(cs.with_default_schema(cs.int_schema(), default=0), required=False),
+            },
+            total=False,
+        )
+        choices[tag] = cs.typed_dict_schema(
+            {
+                'meta': cs.typed_dict_field(
+                    cs.with_default_schema(meta_schema, default_factory=lambda tag=tag: {'kind': tag, 'extra': 0}),
+                    required=False,
+                ),
+                'extra': cs.typed_dict_field(cs.with_default_schema(cs.int_schema(), default=0), required=False),
+            },
+            total=False,
+        )
+    schema = cs.tagged_union_schema(choices, discriminator=[['meta', 'kind']])
+    serializer = SchemaSerializer(schema)
+    validator = SchemaValidator(schema)
+    for tag in ('a', 'b'):
+        instance = validator.validate_python({'meta': {'kind': tag}})
+        assert serializer.to_python(instance, exclude_defaults=True) == {'meta': {'kind': tag}}
+        assert json.loads(serializer.to_json(instance, exclude_defaults=True)) == {'meta': {'kind': tag}}
+        assert validator.validate_json(serializer.to_json(instance, exclude_defaults=True)) == instance
+        assert serializer.to_python(instance, exclude={'meta': {'kind'}}, exclude_defaults=True) == {'meta': {}}
+        assert serializer.to_python(instance, exclude={'meta'}, exclude_defaults=True) == {}
 
 
 def test_tagged_union_dataclass_defaults() -> None:
