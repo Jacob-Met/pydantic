@@ -1492,6 +1492,40 @@ def test_exclude_defaults_omits_equal_arbitrary_type_defaults() -> None:
     assert model.model_dump_json(exclude_defaults=True) == '{}'
 
 
+def test_tagged_union_discriminator_kept_with_exclude_unset() -> None:
+    from typing import Annotated, Literal
+
+    class Child(BaseModel):
+        kind: str = 'child'
+
+    class A(BaseModel):
+        kind: Literal['a'] = 'a'
+        count: int = 0
+        child: Child = Field(default_factory=Child)
+
+    class B(BaseModel):
+        kind: Literal['b'] = 'b'
+        count: int = 0
+
+    Tagged = Annotated[A | B, Field(discriminator='kind')]
+
+    class Envelope(BaseModel):
+        item: Tagged
+        things: list[Tagged]
+
+    obj = Envelope(item=A(count=5), things=[B(count=0)])
+    expected = {'item': {'kind': 'a', 'count': 5}, 'things': [{'kind': 'b', 'count': 0}]}
+    assert obj.model_dump(exclude_unset=True) == expected
+    assert obj.model_dump(mode='json', exclude_unset=True) == expected
+    assert Envelope.model_validate_json(obj.model_dump_json(exclude_unset=True)) == obj
+    assert A().model_dump(exclude_unset=True) == {}
+    assert obj.model_dump(exclude_unset=True, exclude={'item': {'kind'}})['item'] == {'count': 5}
+    assert obj.model_dump(exclude_unset=True, exclude_defaults=True) == {
+        'item': {'kind': 'a', 'count': 5},
+        'things': [{'kind': 'b'}],
+    }
+
+
 def test_tagged_union_discriminator_kept_with_exclude_defaults() -> None:
     """https://github.com/pydantic/pydantic/issues/6465"""
     from typing import Annotated, Literal
@@ -1547,11 +1581,13 @@ def test_tagged_union_discriminator_alias_and_nested_defaults() -> None:
         other: Tagged
 
     value = Envelope(item=A(child=Child(count=11)), other=B())
-    for aliases, discriminator in [(False, 'kind'), (True, 'TYPE')]:
-        expected = {'item': {discriminator: 'a', 'child': {'count': 11}}, 'other': {discriminator: 'b'}}
-        assert value.model_dump(exclude_defaults=True, by_alias=aliases) == expected
-        assert value.model_dump(mode='json', exclude_defaults=True, by_alias=aliases) == expected
-        assert Envelope.model_validate_json(value.model_dump_json(exclude_defaults=True, by_alias=aliases)) == value
+    for exclusion in ('exclude_defaults', 'exclude_unset'):
+        for aliases, discriminator in [(False, 'kind'), (True, 'TYPE')]:
+            options = {exclusion: True, 'by_alias': aliases}
+            expected = {'item': {discriminator: 'a', 'child': {'count': 11}}, 'other': {discriminator: 'b'}}
+            assert value.model_dump(**options) == expected
+            assert value.model_dump(mode='json', **options) == expected
+            assert Envelope.model_validate_json(value.model_dump_json(**options)) == value
 
 
 def test_tagged_union_dataclass_defaults() -> None:
