@@ -1511,3 +1511,50 @@ def test_model_serializer_when_used_fallback_respects_include_exclude() -> None:
         assert m.model_dump(exclude={'b'}) == {'a': 1}
         assert m.model_dump(include={'a'}) == {'a': 1}
         assert m.model_dump(mode='json', exclude={'b'}) == {'ser': True}
+
+
+@pytest.mark.parametrize('error_kind', ['value-error', 'type-error', 'nonbool-result'])
+def test_exclude_defaults_ambiguous_custom_equality(error_kind: str) -> None:
+    """https://github.com/pydantic/pydantic/issues/10547"""
+
+    class AmbiguousBoolean:
+        def __bool__(self) -> bool:
+            raise ValueError('ambiguous truth value')
+
+    class ArrayLike:
+        def __init__(self, values: list[int]) -> None:
+            self.values = values
+
+        def __eq__(self, other: object) -> bool:
+            if error_kind == 'value-error':
+                raise ValueError('ambiguous truth value')
+            if error_kind == 'type-error':
+                raise TypeError('incompatible comparison')
+            return AmbiguousBoolean()  # type: ignore[return-value]
+
+    class Model(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+        value: ArrayLike | None = None
+
+    changed = Model(value=ArrayLike([3, 4]))
+    assert changed.model_dump(exclude_defaults=True)['value'] is changed.value
+
+    def fallback(value: ArrayLike) -> list[int]:
+        return value.values
+
+    assert Model().model_dump(exclude_defaults=True) == {}
+    assert changed.model_dump(mode='json', exclude_defaults=True, fallback=fallback) == {'value': [3, 4]}
+    assert changed.model_dump_json(exclude_defaults=True, fallback=fallback) == '{"value":[3,4]}'
+
+
+def test_exclude_defaults_propagates_unrelated_equality_errors() -> None:
+    class Broken:
+        def __eq__(self, other: object) -> bool:
+            raise RuntimeError('unexpected application error')
+
+    class Model(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+        value: Broken | None = None
+
+    with pytest.raises(RuntimeError, match='unexpected application error'):
+        Model(value=Broken()).model_dump(exclude_defaults=True)

@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::string::ToString;
 use std::sync::Arc;
 
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
 use pyo3::types::PyDict;
@@ -88,9 +89,15 @@ fn exclude_default<'py>(
 ) -> PyResult<bool> {
     if extra.exclude_defaults
         && let Some(default) = serializer.get_default(value.py())?
-        && value.eq(default)?
     {
-        return Ok(true);
+        match value.eq(default) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(error)
+                if error.is_instance_of::<PyValueError>(value.py())
+                    || error.is_instance_of::<PyTypeError>(value.py()) => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(false)
 }
