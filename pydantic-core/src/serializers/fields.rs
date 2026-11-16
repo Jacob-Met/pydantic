@@ -314,8 +314,13 @@ impl GeneralFieldsSerializer {
         };
 
         // filtering on the value
-        if exclude_field_by_value(value, state, missing_sentinel, field.serialization_exclude_if.as_ref())?
-            || (!preserve_discriminator && exclude_default(value, &state.extra, serializer)?)
+        if exclude_field_by_value(
+            value,
+            state,
+            missing_sentinel,
+            field.serialization_exclude_if.as_ref(),
+            preserve_discriminator,
+        )? || (!preserve_discriminator && exclude_default(value, &state.extra, serializer)?)
         {
             return Ok(None);
         }
@@ -358,6 +363,7 @@ impl GeneralFieldsSerializer {
                 missing_sentinel,
                 // TODO: support `exclude_if` on extra_fields
                 None,
+                false,
             )?
         {
             let state = &mut state.scoped_include_exclude(next_include_exclude);
@@ -375,8 +381,9 @@ pub fn exclude_field_by_value<'py>(
     state: &SerializationState<'py>,
     missing_sentinel: &Bound<'py, PyAny>,
     exclude_if_callable: Option<&Py<PyAny>>,
+    preserve_discriminator: bool,
 ) -> PyResult<bool> {
-    if state.extra.exclude_none && value.is_none() {
+    if state.extra.exclude_none && value.is_none() && !preserve_discriminator {
         return Ok(true);
     }
 

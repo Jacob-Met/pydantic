@@ -1512,6 +1512,58 @@ def test_model_serializer_when_used_fallback_respects_include_exclude() -> None:
         assert m.model_dump(include={'a'}) == {'a': 1}
         assert m.model_dump(mode='json', exclude={'b'}) == {'ser': True}
 
+def test_tagged_union_none_discriminator_alias_and_root_adapter() -> None:
+    from typing import Annotated, Literal
+
+    from pydantic import TypeAdapter
+
+    class A(BaseModel):
+        kind: Literal[None] = Field(None, validation_alias='TYPE', serialization_alias='TYPE')
+        nullable: int | None = None
+
+    class B(BaseModel):
+        kind: Literal['b'] = Field('b', validation_alias='TYPE', serialization_alias='TYPE')
+        nullable: int | None = None
+
+    adapter = TypeAdapter(Annotated[A | B, Field(discriminator='kind')])
+    for aliases, field_name in [(False, 'kind'), (True, 'TYPE')]:
+        expected = {field_name: None}
+        assert adapter.dump_python(A(), exclude_none=True, by_alias=aliases) == expected
+        wire = adapter.dump_json(A(), exclude_none=True, by_alias=aliases)
+        assert wire == json.dumps(expected, separators=(',', ':')).encode()
+        assert adapter.validate_json(wire) == A()
+        assert adapter.dump_python(B(), exclude_none=True, by_alias=aliases) == {field_name: 'b'}
+
+
+def test_tagged_union_none_discriminator_survives_exclude_none() -> None:
+    from typing import Annotated, Literal
+
+    class A(BaseModel):
+        tag: Literal[None] = None
+        nullable: str | None = None
+
+    class B(BaseModel):
+        tag: Literal['b'] = 'b'
+        nullable: str | None = None
+
+    Tagged = Annotated[A | B, Field(discriminator='tag')]
+
+    class Envelope(BaseModel):
+        item: Tagged
+        things: list[Tagged]
+        nullable: str | None = None
+
+    obj = Envelope(item=A(), things=[B()])
+    expected = {'item': {'tag': None}, 'things': [{'tag': 'b'}]}
+    assert obj.model_dump(exclude_none=True) == expected
+    assert obj.model_dump(mode='json', exclude_none=True) == expected
+    assert obj.model_dump_json(exclude_none=True) == '{"item":{"tag":null},"things":[{"tag":"b"}]}'
+    assert Envelope.model_validate_json(obj.model_dump_json(exclude_none=True)) == obj
+    assert obj.model_dump(exclude_none=True, exclude_defaults=True, exclude_unset=True) == expected
+    assert A().model_dump(exclude_none=True) == {}
+    assert obj.model_dump(exclude_none=True, exclude={'item': {'tag'}})['item'] == {}
+
+
 def test_tagged_union_discriminator_kept_with_exclude_unset() -> None:
     from typing import Annotated, Literal
 
