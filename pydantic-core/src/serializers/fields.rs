@@ -457,9 +457,7 @@ impl GeneralFieldsSerializer {
                     used_req_fields += 1;
                 }
 
-                let preserve_discriminator = state.preserved_discriminator.as_ref().is_some_and(|(target, names)| {
-                    target.is(model) && names.iter().any(|name| name.as_str() == &*field.key)
-                });
+                let preserve_discriminator = state.is_preserved_discriminator(model, &field.key);
                 let Some((serializer, next_include_exclude)) =
                     self.prepare_value(&key, &value, field, state, missing_sentinel, preserve_discriminator)?
                 else {

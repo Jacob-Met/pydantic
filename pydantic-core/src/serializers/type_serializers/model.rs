@@ -5,12 +5,12 @@ use pyo3::exceptions::PyAttributeError;
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
-use pyo3::types::{PyDict, PyType};
+use pyo3::types::{PyDict, PyString, PyType};
 
 use pyo3::IntoPyObjectExt;
 
 use super::{
-    BuildSerializer, CombinedSerializer, ComputedFields, Extra, FieldsMode, GeneralFieldsSerializer, ObType, SerCheck,
+    BuildSerializer, CombinedSerializer, ComputedFields, FieldsMode, GeneralFieldsSerializer, ObType, SerCheck,
     SerField, SerFields, TypeSerializer, infer_json_key, infer_json_key_known,
 };
 use crate::build_tools::py_schema_err;
@@ -186,7 +186,7 @@ impl ModelSerializer {
             return do_serialize.serialize_fallback(self.get_name(), value, state);
         };
 
-        let inner_value = self.get_inner_value(value, dict, &state.extra)?;
+        let inner_value = self.get_inner_value(value, dict, state)?;
 
         let state = &mut state.scoped_set(|s| &mut s.model, Some(value.clone()));
         do_serialize.serialize_no_infer(&self.serializer, &inner_value, state)
@@ -231,8 +231,9 @@ impl ModelSerializer {
         &self,
         model: &Bound<'py, PyAny>,
         dict: Bound<'py, PyAny>,
-        extra: &Extra,
+        state: &SerializationState<'py>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let extra = &state.extra;
         let py: Python<'_> = model.py();
         let mut attrs = dict.cast_into::<PyDict>()?;
 
@@ -248,7 +249,16 @@ impl ModelSerializer {
             let mut missing_sentinel = None;
 
             for key in attrs.keys() {
-                if !fields_set.contains(&key)? {
+                // A tagged union must keep its discriminator even if it was
+                // supplied by the field default; otherwise the dumped value
+                // cannot select a variant when it is validated again.
+                let preserved_discriminator = state.preserved_discriminator.is_some()
+                    && key
+                        .cast::<PyString>()
+                        .ok()
+                        .and_then(|key| key.to_str().ok())
+                        .is_some_and(|key| state.is_preserved_discriminator(model, key));
+                if !preserved_discriminator && !fields_set.contains(&key)? {
                     let missing_sentinel = match &missing_sentinel {
                         Some(missing_sentinel) => missing_sentinel,
                         None => missing_sentinel.insert(get_missing_sentinel_object(py)?),
