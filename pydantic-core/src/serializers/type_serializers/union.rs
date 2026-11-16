@@ -278,8 +278,29 @@ impl TaggedUnionSerializer {
             return self.choices.serialize(selector, state);
         };
 
+        // `exclude_defaults` must not erase the discriminator: that turns a valid
+        // tagged union into JSON that cannot select a variant when read back.
+        // Match the selected object by identity so nested fields cannot inherit it.
+        let preserved_discriminator = if state.extra.exclude_defaults {
+            match &*self.discriminator {
+                Discriminator::LookupPaths(paths) => Some((
+                    value.clone(),
+                    paths
+                        .iter()
+                        .filter(|path| path.rest().is_empty())
+                        .map(|path| path.first_key().to_owned())
+                        .collect(),
+                )),
+                Discriminator::Function(_) => None,
+            }
+        } else {
+            None
+        };
+        let state = &mut state.scoped_set(|s| &mut s.preserved_discriminator, preserved_discriminator);
+
         // Try a first pass with the appropriate checking level
-        let err = match selector(choice, &mut scoped_check_level(state, initial_check_level(state))) {
+        let check = initial_check_level(state);
+        let err = match selector(choice, &mut scoped_check_level(state, check)) {
             Ok(v) => return Ok(Some(v)),
             Err(err) => err,
         };
