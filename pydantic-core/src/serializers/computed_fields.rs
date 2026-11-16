@@ -60,6 +60,7 @@ impl ComputedFields {
                 state,
                 missing_sentinel,
                 computed_field.serialization_exclude_if.as_ref(),
+                false,
             )? {
                 continue;
             }
