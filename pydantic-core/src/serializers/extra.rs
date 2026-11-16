@@ -85,6 +85,15 @@ impl<'py> SerializationState<'py> {
     pub fn py(&self) -> Python<'py> {
         self.extra.py
     }
+
+    /// Whether the current field is a discriminator of the selected tagged-union object.
+    /// Model identity keeps this exception local to the matching variant.
+    #[inline]
+    pub fn is_preserved_discriminator(&self, model: &Bound<'py, PyAny>, key: &str) -> bool {
+        self.preserved_discriminator
+            .as_ref()
+            .is_some_and(|(target, names)| target.is(model) && names.iter().any(|name| name == key))
+    }
 }
 
 fn depth_exceeded_error() -> PyErr {

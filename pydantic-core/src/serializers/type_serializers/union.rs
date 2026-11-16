@@ -278,10 +278,10 @@ impl TaggedUnionSerializer {
             return self.choices.serialize(selector, state);
         };
 
-        // `exclude_defaults` must not erase the discriminator: that turns a valid
+        // `exclude_defaults` and `exclude_unset` must not erase the discriminator: that turns a valid
         // tagged union into JSON that cannot select a variant when read back.
         // Match the selected object by identity so nested fields cannot inherit it.
-        let preserved_discriminator = if state.extra.exclude_defaults {
+        let preserved_discriminator = if state.extra.exclude_defaults || state.extra.exclude_unset {
             match &*self.discriminator {
                 Discriminator::LookupPaths(paths) => Some((
                     value.clone(),
