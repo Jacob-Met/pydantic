@@ -592,6 +592,26 @@ def test_include_exclude_unset():
     assert m.model_dump(include={'a', 'b', 'c'}, exclude={'a', 'c'}, exclude_unset=True) == {'b': 2}
 
 
+def test_exclude_defaults_preserves_scalar_types_and_negative_zero():
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    import math
+
+    class Packet(BaseModel):
+        flag: bool | int = False
+        code: int | bool = 1
+        num: int | float = 0
+        z: float = 0.0
+
+    packet = Packet(flag=0, code=True, num=0.0, z=-0.0)
+    assert packet.model_dump_json(exclude_defaults=True) == '{"flag":0,"code":true,"num":0.0,"z":-0.0}'
+    restored = Packet.model_validate_json(packet.model_dump_json(exclude_defaults=True))
+    assert type(restored.flag) is int and restored.flag == 0
+    assert type(restored.code) is bool and restored.code is True
+    assert type(restored.num) is float and restored.num == 0.0
+    assert math.copysign(1.0, restored.z) == -1.0
+    assert Packet().model_dump_json(exclude_defaults=True) == '{}'
+
+
 def test_include_exclude_defaults():
     class Model(BaseModel):
         a: int

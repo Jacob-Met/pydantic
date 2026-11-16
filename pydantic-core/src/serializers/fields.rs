@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyFloat};
 
 use ahash::AHashMap;
 use smallvec::SmallVec;
@@ -86,13 +86,20 @@ fn exclude_default<'py>(
     extra: &Extra<'py>,
     serializer: &CombinedSerializer,
 ) -> PyResult<bool> {
-    if extra.exclude_defaults
-        && let Some(default) = serializer.get_default(value.py())?
-        && value.eq(default)?
-    {
-        return Ok(true);
+    if !extra.exclude_defaults {
+        return Ok(false);
     }
-    Ok(false)
+    let Some(default) = serializer.get_default(value.py())? else {
+        return Ok(false);
+    };
+    let default = default.bind(value.py());
+    if !value.get_type().is(default.get_type()) || !value.eq(default)? {
+        return Ok(false);
+    }
+    if let (Ok(value_float), Ok(default_float)) = (value.cast::<PyFloat>(), default.cast::<PyFloat>()) {
+        return Ok(value_float.value().is_sign_negative() == default_float.value().is_sign_negative());
+    }
+    Ok(true)
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

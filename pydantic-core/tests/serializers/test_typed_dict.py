@@ -179,6 +179,39 @@ def test_exclude_default():
     assert v.to_json({'foo': 1, 'bar': b'[default]'}, exclude_defaults=True) == b'{"foo":1}'
 
 
+def test_exclude_defaults_preserves_scalar_types_and_negative_zero():
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    serializer = SchemaSerializer(
+        core_schema.typed_dict_schema(
+            {
+                'flag': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(
+                        core_schema.union_schema([core_schema.bool_schema(), core_schema.int_schema()]), default=False
+                    )
+                ),
+                'code': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(
+                        core_schema.union_schema([core_schema.int_schema(), core_schema.bool_schema()]), default=1
+                    )
+                ),
+                'num': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(
+                        core_schema.union_schema([core_schema.int_schema(), core_schema.float_schema()]), default=0
+                    )
+                ),
+                'z': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(core_schema.float_schema(), default=0.0)
+                ),
+            }
+        )
+    )
+    value = {'flag': 0, 'code': True, 'num': 0.0, 'z': -0.0}
+    assert serializer.to_python(value, exclude_defaults=True) == value
+    assert serializer.to_python(value, mode='json', exclude_defaults=True) == value
+    assert serializer.to_json(value, exclude_defaults=True) == b'{"flag":0,"code":true,"num":0.0,"z":-0.0}'
+    assert serializer.to_json({'flag': False, 'code': 1, 'num': 0, 'z': 0.0}, exclude_defaults=True) == b'{}'
+
+
 def test_function_plain_field_serializer_to_python():
     class Model(TypedDict):
         x: int
