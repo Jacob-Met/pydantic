@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::string::ToString;
 use std::sync::Arc;
 
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
 use pyo3::types::{PyComplex, PyDateTime, PyDict, PyFloat, PyFrozenSet, PyList, PySet, PyString, PyTime, PyTuple};
@@ -169,8 +170,18 @@ fn matches_default<'py>(
     if value.is(default) {
         return Ok(true);
     }
-    if !value.get_type().is(default.get_type()) || !value.eq(default)? {
+    if !value.get_type().is(default.get_type()) {
         return Ok(false);
+    }
+    // Uncomparable custom values are not defaults. In particular, array-like
+    // equality can raise rather than produce a single boolean.
+    match value.eq(default) {
+        Ok(true) => {}
+        Ok(false) => return Ok(false),
+        Err(err) if err.is_instance_of::<PyValueError>(value.py()) || err.is_instance_of::<PyTypeError>(value.py()) => {
+            return Ok(false);
+        }
+        Err(err) => return Err(err),
     }
     if value.is_instance_of::<PyFloat>() {
         return Ok(value.extract::<f64>()?.to_bits() == default.extract::<f64>()?.to_bits());

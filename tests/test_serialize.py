@@ -1492,6 +1492,58 @@ def test_exclude_defaults_omits_equal_arbitrary_type_defaults() -> None:
     assert model.model_dump_json(exclude_defaults=True) == '{}'
 
 
+@pytest.mark.parametrize('error_kind', ['value-error', 'type-error', 'nonbool-result'])
+def test_exclude_defaults_with_ambiguous_custom_equality(error_kind: str) -> None:
+    """https://github.com/pydantic/pydantic/issues/10547"""
+
+    class AmbiguousBoolean:
+        def __bool__(self) -> bool:
+            raise ValueError('ambiguous array truth value')
+
+    class ArrayLike:
+        def __init__(self, values: list[int]) -> None:
+            self.values = values
+
+        def __eq__(self, other: object) -> bool:
+            if error_kind == 'value-error':
+                raise ValueError('ambiguous array truth value')
+            if error_kind == 'type-error':
+                raise TypeError('array cannot be compared')
+            return AmbiguousBoolean()  # type: ignore[return-value]
+
+    class Model(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+        data: ArrayLike = Field(default_factory=lambda: ArrayLike([1, 2]))
+
+        @field_serializer('data')
+        def serialize_data(self, value: ArrayLike) -> list[int]:
+            return value.values
+
+    changed = Model(data=ArrayLike([3, 4]))
+    assert changed.model_dump(exclude_defaults=True) == {'data': [3, 4]}
+    assert changed.model_dump(mode='json', exclude_defaults=True) == {'data': [3, 4]}
+    assert changed.model_dump_json(exclude_defaults=True) == '{"data":[3,4]}'
+
+
+def test_exclude_defaults_does_not_hide_unrelated_equality_errors() -> None:
+    """Non-comparison failures should continue to surface to the caller."""
+
+    class Broken:
+        def __eq__(self, other: object) -> bool:
+            raise RuntimeError('unexpected application error')
+
+    class Model(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+        value: Broken = Field(default_factory=Broken)
+
+        @field_serializer('value')
+        def ser(self, value: Broken) -> str:
+            return 'serializable'
+
+    with pytest.raises(RuntimeError, match='unexpected application error'):
+        Model(value=Broken()).model_dump(exclude_defaults=True)
+
+
 def test_exclude_defaults_roundtrips_nested_equal_values() -> None:
     """https://github.com/pydantic/pydantic/issues/14275"""
     from datetime import UTC, datetime, timedelta, timezone
