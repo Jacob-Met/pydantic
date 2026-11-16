@@ -227,6 +227,77 @@ def test_exclude_default_keeps_distinct_numeric_values():
     assert negative_zero_default.to_json({'z': -0.0}, exclude_defaults=True) == b'{}'
 
 
+def test_exclude_defaults_preserves_equal_but_distinct_nested_wire_values():
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    from datetime import UTC, datetime, timedelta, timezone
+    from decimal import Decimal
+
+    serializer = SchemaSerializer(
+        core_schema.typed_dict_schema(
+            {
+                'items': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(core_schema.list_schema(core_schema.any_schema()), default=[0])
+                ),
+                'mapping': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(
+                        core_schema.dict_schema(core_schema.str_schema(), core_schema.any_schema()), default={'x': 0.0}
+                    )
+                ),
+                'amount': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(core_schema.decimal_schema(), default=Decimal('1.0'))
+                ),
+                'at': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(
+                        core_schema.datetime_schema(), default=datetime(2020, 1, 1, tzinfo=UTC)
+                    )
+                ),
+            }
+        )
+    )
+    values = {
+        'items': [False],
+        'mapping': {'x': -0.0},
+        'amount': Decimal('1.00'),
+        'at': datetime(2020, 1, 1, 1, tzinfo=timezone(timedelta(hours=1))),
+    }
+    assert serializer.to_json(values, exclude_defaults=True) == (
+        b'{"items":[false],"mapping":{"x":-0.0},"amount":"1.00","at":"2020-01-01T01:00:00+01:00"}'
+    )
+    assert serializer.to_python(values, mode='json', exclude_defaults=True) == {
+        'items': [False],
+        'mapping': {'x': -0.0},
+        'amount': '1.00',
+        'at': '2020-01-01T01:00:00+01:00',
+    }
+    # Mapping equality also conflates differently serialized keys.
+    key_serializer = SchemaSerializer(
+        core_schema.typed_dict_schema(
+            {
+                'map': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(
+                        core_schema.dict_schema(core_schema.any_schema(), core_schema.any_schema()), default={0: 'x'}
+                    )
+                )
+            }
+        )
+    )
+    assert key_serializer.to_json({'map': {False: 'x'}}, exclude_defaults=True) == b'{"map":{"false":"x"}}'
+    assert key_serializer.to_json({'map': {0: 'x'}}, exclude_defaults=True) == b'{}'
+
+    assert (
+        serializer.to_json(
+            {
+                'items': [0],
+                'mapping': {'x': 0.0},
+                'amount': Decimal('1.0'),
+                'at': datetime(2020, 1, 1, tzinfo=UTC),
+            },
+            exclude_defaults=True,
+        )
+        == b'{}'
+    )
+
+
 def test_function_plain_field_serializer_to_python():
     class Model(TypedDict):
         x: int

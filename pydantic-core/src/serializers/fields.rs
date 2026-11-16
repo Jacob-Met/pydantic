@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
-use pyo3::types::PyDict;
-use pyo3::types::PyFloat;
+use pyo3::types::{PyDateTime, PyDict, PyFloat, PyList, PyTime, PyTuple};
 
 use ahash::AHashMap;
 use smallvec::SmallVec;
@@ -82,22 +81,70 @@ fn serialization_exclude_if(exclude_if_callable: Option<&Py<PyAny>>, value: &Bou
     Ok(false)
 }
 
+/// Python equality is weaker than serialization equality: nested `False == 0`,
+/// signed zero, Decimal precision, and equivalent instants with different UTC
+/// offsets can all produce different JSON. Preserve these values when excluding
+/// defaults instead of silently dropping them from a roundtrip.
+fn matches_default(value: &Bound<'_, PyAny>, default: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if value.is(default) {
+        return Ok(true);
+    }
+    if !value.get_type().is(default.get_type()) || !value.eq(default)? {
+        return Ok(false);
+    }
+    if value.is_instance_of::<PyFloat>() {
+        return Ok(value.extract::<f64>()?.to_bits() == default.extract::<f64>()?.to_bits());
+    }
+    if let Ok(items) = value.cast::<PyList>() {
+        let defaults = default.cast::<PyList>()?;
+        return items
+            .iter()
+            .zip(defaults.iter())
+            .try_fold(items.len() == defaults.len(), |matches, (item, default)| {
+                Ok(matches && matches_default(&item, &default)?)
+            });
+    }
+    if let Ok(items) = value.cast::<PyTuple>() {
+        let defaults = default.cast::<PyTuple>()?;
+        return items
+            .iter()
+            .zip(defaults.iter())
+            .try_fold(items.len() == defaults.len(), |matches, (item, default)| {
+                Ok(matches && matches_default(&item, &default)?)
+            });
+    }
+    if let Ok(items) = value.cast::<PyDict>() {
+        let defaults = default.cast::<PyDict>()?;
+        // Mapping equality ignores insertion order and conflates keys such as 0 and False,
+        // but both details can change serialized JSON.
+        return items.iter().zip(defaults.iter()).try_fold(
+            items.len() == defaults.len(),
+            |matches, ((key, item), (default_key, default))| {
+                Ok(matches && matches_default(&key, &default_key)? && matches_default(&item, &default)?)
+            },
+        );
+    }
+    if value.is_instance_of::<PyDateTime>()
+        || value.is_instance_of::<PyTime>()
+        || (value.get_type().name()?.to_str()? == "Decimal" && value.get_type().module()?.to_str()? == "decimal")
+    {
+        // Decimal scale and datetime timezone/fold data survive serialization but not equality.
+        let value_repr = value.repr()?;
+        let default_repr = default.repr()?;
+        return Ok(value_repr.to_str()? == default_repr.to_str()?);
+    }
+    Ok(true)
+}
+
 fn exclude_default<'py>(
     value: &Bound<'py, PyAny>,
     extra: &Extra<'py>,
     serializer: &CombinedSerializer,
 ) -> PyResult<bool> {
-    // Python equality can conflate values that serialize differently (False == 0).
     if extra.exclude_defaults
         && let Some(default) = serializer.get_default(value.py())?
-        && value.eq(&default)?
-        && value.get_type().is(&default.bind(value.py()).get_type())
     {
-        // Equal numeric values can serialize differently (e.g. -0.0 versus 0.0).
-        if value.is_instance_of::<PyFloat>() {
-            return Ok(value.extract::<f64>()?.to_bits() == default.extract::<f64>(value.py())?.to_bits());
-        }
-        return Ok(true);
+        return matches_default(value, default.bind(value.py()));
     }
     Ok(false)
 }

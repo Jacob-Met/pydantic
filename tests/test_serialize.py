@@ -1407,6 +1407,29 @@ def test_field_serializers_use_enum_ref() -> None:
     assert m.model_dump()['computed_a_or_b'] == 'b'
 
 
+def test_exclude_defaults_roundtrips_nested_equal_values() -> None:
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    from datetime import UTC, datetime, timedelta, timezone
+    from decimal import Decimal
+
+    class Model(BaseModel):
+        items: list[Any] = [0]
+        mapping: dict[str, Any] = {'x': 0.0}
+        amount: Decimal = Decimal('1.0')
+        at: datetime = datetime(2020, 1, 1, tzinfo=UTC)
+
+    value = Model(
+        items=[False],
+        mapping={'x': -0.0},
+        amount=Decimal('1.00'),
+        at=datetime(2020, 1, 1, 1, tzinfo=timezone(timedelta(hours=1))),
+    )
+    data = value.model_dump_json(exclude_defaults=True)
+    assert data == '{"items":[false],"mapping":{"x":-0.0},"amount":"1.00","at":"2020-01-01T01:00:00+01:00"}'
+    assert Model.model_validate_json(data).model_dump_json() == value.model_dump_json()
+    assert Model().model_dump_json(exclude_defaults=True) == '{}'
+
+
 def test_serialization_fallback() -> None:
     class Arbitrary:
         value = 1
