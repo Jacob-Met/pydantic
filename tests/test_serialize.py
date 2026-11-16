@@ -1492,6 +1492,93 @@ def test_exclude_defaults_omits_equal_arbitrary_type_defaults() -> None:
     assert model.model_dump_json(exclude_defaults=True) == '{}'
 
 
+def test_tagged_union_discriminator_kept_with_exclude_defaults() -> None:
+    """https://github.com/pydantic/pydantic/issues/6465"""
+    from typing import Annotated, Literal
+
+    class A(BaseModel):
+        kind: Literal['a'] = 'a'
+        count: int = 0
+        other: int = 0
+
+    class B(BaseModel):
+        kind: Literal['b'] = 'b'
+        count: int = 0
+
+    Tag = Annotated[A | B, Field(discriminator='kind')]
+
+    class Envelope(BaseModel):
+        item: Tag
+        things: list[Tag] = []
+
+    obj = Envelope(item=A(), things=[A(count=5), B()])
+    expected = {'item': {'kind': 'a'}, 'things': [{'kind': 'a', 'count': 5}, {'kind': 'b'}]}
+    assert obj.model_dump(exclude_defaults=True) == expected
+    assert obj.model_dump(mode='json', exclude_defaults=True) == expected
+    assert (
+        obj.model_dump_json(exclude_defaults=True)
+        == '{"item":{"kind":"a"},"things":[{"kind":"a","count":5},{"kind":"b"}]}'
+    )
+    assert Envelope.model_validate_json(obj.model_dump_json(exclude_defaults=True)) == obj
+    # Standalone instances still omit their own defaults when no discriminator is needed.
+    assert A().model_dump(exclude_defaults=True) == {}
+    # Caller exclusions still take precedence over discriminator retention.
+    assert obj.model_dump(exclude_defaults=True, exclude={'item': {'kind'}})['item'] == {}
+
+
+def test_tagged_union_discriminator_alias_and_nested_defaults() -> None:
+    from typing import Annotated, Literal
+
+    class Child(BaseModel):
+        kind: str = 'child'
+        count: int = 10
+
+    class A(BaseModel):
+        kind: Literal['a'] = Field('a', validation_alias='TYPE', serialization_alias='TYPE')
+        child: Child = Field(default_factory=Child)
+
+    class B(BaseModel):
+        kind: Literal['b'] = Field('b', validation_alias='TYPE', serialization_alias='TYPE')
+
+    Tagged = Annotated[A | B, Field(discriminator='kind')]
+
+    class Envelope(BaseModel):
+        item: Tagged
+        other: Tagged
+
+    value = Envelope(item=A(child=Child(count=11)), other=B())
+    for aliases, discriminator in [(False, 'kind'), (True, 'TYPE')]:
+        expected = {'item': {discriminator: 'a', 'child': {'count': 11}}, 'other': {discriminator: 'b'}}
+        assert value.model_dump(exclude_defaults=True, by_alias=aliases) == expected
+        assert value.model_dump(mode='json', exclude_defaults=True, by_alias=aliases) == expected
+        assert Envelope.model_validate_json(value.model_dump_json(exclude_defaults=True, by_alias=aliases)) == value
+
+
+def test_tagged_union_dataclass_defaults() -> None:
+    from typing import Annotated, Literal
+
+    from pydantic import TypeAdapter
+    from pydantic.dataclasses import dataclass
+
+    @dataclass
+    class A:
+        kind: Literal['a'] = 'a'
+        detail: int = 0
+
+    @dataclass
+    class B:
+        kind: Literal['b'] = 'b'
+        detail: int = 0
+
+    adapter = TypeAdapter(Annotated[A | B, Field(discriminator='kind')])
+    for instance, expected in [(A(), {'kind': 'a'}), (B(detail=1), {'kind': 'b', 'detail': 1})]:
+        assert adapter.dump_python(instance, exclude_defaults=True) == expected
+        assert (
+            adapter.dump_json(instance, exclude_defaults=True) == json.dumps(expected, separators=(',', ':')).encode()
+        )
+        assert adapter.validate_json(adapter.dump_json(instance, exclude_defaults=True)) == instance
+
+
 @pytest.mark.parametrize('error_kind', ['value-error', 'type-error', 'nonbool-result'])
 def test_exclude_defaults_with_ambiguous_custom_equality(error_kind: str) -> None:
     """https://github.com/pydantic/pydantic/issues/10547"""

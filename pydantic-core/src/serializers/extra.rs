@@ -30,6 +30,9 @@ pub(crate) struct SerializationState<'py> {
     field_name: Option<Bound<'py, PyString>>,
     /// Inside unions, checks are applied to attempt to select a preferred branch
     pub check: SerCheck,
+    /// The selected tagged union value and its discriminator keys. Checking identity
+    /// keeps this exemption from default exclusion from leaking into nested models.
+    pub preserved_discriminator: Option<(Bound<'py, PyAny>, Vec<String>)>,
     include_exclude: IncludeExclude<'py>,
     /// Global settings for the serialization process
     pub extra: Extra<'py>,
@@ -72,6 +75,7 @@ impl<'py> SerializationState<'py> {
             model: None,
             field_name: None,
             check: SerCheck::None,
+            preserved_discriminator: None,
             include_exclude: IncludeExclude { include, exclude },
             extra,
         })
@@ -351,6 +355,7 @@ impl ExtraOwned {
             model: self.model.as_ref().map(|m| m.bind(py).clone()),
             field_name: self.field_name.as_ref().map(|name| name.bind(py).clone()),
             check: self.check,
+            preserved_discriminator: None,
             include_exclude: IncludeExclude {
                 include: self.include.as_ref().map(|m| m.bind(py).clone()),
                 exclude: self.exclude.as_ref().map(|m| m.bind(py).clone()),
