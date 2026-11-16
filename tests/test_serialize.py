@@ -1443,6 +1443,35 @@ def test_exclude_defaults_preserves_equal_set_element_types() -> None:
     assert Model(numbers={0}, frozen=frozenset({0})).model_dump_json(exclude_defaults=True) == '{}'
 
 
+def test_exclude_defaults_preserves_equal_models_and_dataclasses() -> None:
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    from dataclasses import dataclass
+
+    @dataclass
+    class Data:
+        x: Any
+
+    @dataclass(slots=True)
+    class SlottedData:
+        x: Any
+
+    class Nested(BaseModel):
+        x: Any
+
+    class Parent(BaseModel):
+        nested: Nested = Field(default_factory=lambda: Nested(x=0))
+        data: Data = Field(default_factory=lambda: Data(x=0))
+        slotted: SlottedData = Field(default_factory=lambda: SlottedData(x=0))
+        inferred: Any = Field(default_factory=lambda: Data(x=0))
+
+    value = Parent(nested=Nested(x=False), data=Data(x=False), slotted=SlottedData(x=False), inferred=Data(x=False))
+    assert value.model_dump_json() == (
+        '{"nested":{"x":false},"data":{"x":false},"slotted":{"x":false},"inferred":{"x":false}}'
+    )
+    assert value.model_dump_json(exclude_defaults=True) == value.model_dump_json()
+    assert Parent().model_dump_json(exclude_defaults=True) == '{}'
+
+
 def test_serialization_fallback() -> None:
     class Arbitrary:
         value = 1

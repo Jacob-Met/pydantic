@@ -11,16 +11,17 @@ use smallvec::SmallVec;
 
 use crate::PydanticSerializationUnexpectedValue;
 use crate::common::missing_sentinel::get_missing_sentinel_object;
-use crate::serializers::SerializationState;
 use crate::serializers::errors::unwrap_ser_error;
 use crate::serializers::extra::{IncludeExclude, SerCheck};
 use crate::serializers::shared::{DoSerialize, SerializeMap, serialize_to_json, serialize_to_python};
 use crate::serializers::type_serializers::any::AnySerializer;
 use crate::serializers::type_serializers::function::{FunctionPlainSerializer, FunctionWrapSerializer};
+use crate::serializers::{SerMode, SerializationState};
 
 use super::computed_fields::ComputedFields;
-use super::extra::Extra;
+use super::extra::{Extra, WarningsMode};
 use super::filter::SchemaFilter;
+use super::infer::infer_to_python;
 use super::shared::{CombinedSerializer, TypeSerializer};
 
 /// representation of a field for serialization
@@ -84,8 +85,9 @@ fn serialization_exclude_if(exclude_if_callable: Option<&Py<PyAny>>, value: &Bou
 fn matches_unordered_default<'py>(
     values: impl Iterator<Item = Bound<'py, PyAny>>,
     defaults: impl Iterator<Item = Bound<'py, PyAny>>,
-    py: Python<'py>,
+    state: &SerializationState<'py>,
 ) -> PyResult<bool> {
+    let py = state.py();
     // A set's own equality can match False with 0. Map each default element to
     // its original object so a value's equality lookup exposes the actual type.
     let lookup = PyDict::new(py);
@@ -98,7 +100,7 @@ fn matches_unordered_default<'py>(
         let Some(default) = lookup.get_item(&value)? else {
             return Ok(false);
         };
-        if !matches_default(&value, &default)? {
+        if !matches_default(&value, &default, state, None)? {
             return Ok(false);
         }
     }
@@ -109,7 +111,12 @@ fn matches_unordered_default<'py>(
 /// signed zero, Decimal precision, and equivalent instants with different UTC
 /// offsets can all produce different JSON. Preserve these values when excluding
 /// defaults instead of silently dropping them from a roundtrip.
-fn matches_default(value: &Bound<'_, PyAny>, default: &Bound<'_, PyAny>) -> PyResult<bool> {
+fn matches_default<'py>(
+    value: &Bound<'py, PyAny>,
+    default: &Bound<'py, PyAny>,
+    state: &SerializationState<'py>,
+    serializer: Option<&CombinedSerializer>,
+) -> PyResult<bool> {
     if value.is(default) {
         return Ok(true);
     }
@@ -125,7 +132,7 @@ fn matches_default(value: &Bound<'_, PyAny>, default: &Bound<'_, PyAny>) -> PyRe
             .iter()
             .zip(defaults.iter())
             .try_fold(items.len() == defaults.len(), |matches, (item, default)| {
-                Ok(matches && matches_default(&item, &default)?)
+                Ok(matches && matches_default(&item, &default, state, None)?)
             });
     }
     if let Ok(items) = value.cast::<PyTuple>() {
@@ -134,7 +141,7 @@ fn matches_default(value: &Bound<'_, PyAny>, default: &Bound<'_, PyAny>) -> PyRe
             .iter()
             .zip(defaults.iter())
             .try_fold(items.len() == defaults.len(), |matches, (item, default)| {
-                Ok(matches && matches_default(&item, &default)?)
+                Ok(matches && matches_default(&item, &default, state, None)?)
             });
     }
     if let Ok(items) = value.cast::<PyDict>() {
@@ -144,15 +151,17 @@ fn matches_default(value: &Bound<'_, PyAny>, default: &Bound<'_, PyAny>) -> PyRe
         return items.iter().zip(defaults.iter()).try_fold(
             items.len() == defaults.len(),
             |matches, ((key, item), (default_key, default))| {
-                Ok(matches && matches_default(&key, &default_key)? && matches_default(&item, &default)?)
+                Ok(matches
+                    && matches_default(&key, &default_key, state, None)?
+                    && matches_default(&item, &default, state, None)?)
             },
         );
     }
     if let Ok(items) = value.cast::<PySet>() {
-        return matches_unordered_default(items.iter(), default.cast::<PySet>()?.iter(), value.py());
+        return matches_unordered_default(items.iter(), default.cast::<PySet>()?.iter(), state);
     }
     if let Ok(items) = value.cast::<PyFrozenSet>() {
-        return matches_unordered_default(items.iter(), default.cast::<PyFrozenSet>()?.iter(), value.py());
+        return matches_unordered_default(items.iter(), default.cast::<PyFrozenSet>()?.iter(), state);
     }
     if value.is_instance_of::<PyDateTime>()
         || value.is_instance_of::<PyTime>()
@@ -163,18 +172,44 @@ fn matches_default(value: &Bound<'_, PyAny>, default: &Bound<'_, PyAny>) -> PyRe
         let default_repr = default.repr()?;
         return Ok(value_repr.to_str()? == default_repr.to_str()?);
     }
+    // Object equality (including dataclass and BaseModel equality) can hide
+    // different nested serialized values. For non-builtins, compare the actual
+    // JSON-mode representations rather than trusting their `__eq__` method.
+    if value.get_type().module()?.to_str()? != "builtins" {
+        let mut extra = state.extra.clone();
+        extra.mode = SerMode::Json;
+        extra.exclude_defaults = false;
+        let mut value_state = SerializationState::new(state.config, WarningsMode::None, None, None, extra.clone())?;
+        let mut default_state = SerializationState::new(state.config, WarningsMode::None, None, None, extra)?;
+        let converted_value = match serializer {
+            Some(serializer) => serializer.to_python(value, &mut value_state),
+            None => infer_to_python(value, &mut value_state),
+        };
+        let converted_default = match serializer {
+            Some(serializer) => serializer.to_python(default, &mut default_state),
+            None => infer_to_python(default, &mut default_state),
+        };
+        if let (Ok(converted_value), Ok(converted_default)) = (converted_value, converted_default) {
+            let converted_value = converted_value.bind(value.py());
+            let converted_default = converted_default.bind(value.py());
+            if !converted_value.is(value) && !converted_default.is(default) {
+                return matches_default(converted_value, converted_default, state, None);
+            }
+        }
+        return Ok(false);
+    }
     Ok(true)
 }
 
 fn exclude_default<'py>(
     value: &Bound<'py, PyAny>,
-    extra: &Extra<'py>,
+    state: &SerializationState<'py>,
     serializer: &CombinedSerializer,
 ) -> PyResult<bool> {
-    if extra.exclude_defaults
+    if state.extra.exclude_defaults
         && let Some(default) = serializer.get_default(value.py())?
     {
-        return matches_default(value, default.bind(value.py()));
+        return matches_default(value, default.bind(value.py()), state, Some(serializer));
     }
     Ok(false)
 }
@@ -397,7 +432,7 @@ impl GeneralFieldsSerializer {
 
         // filtering on the value
         if exclude_field_by_value(value, state, missing_sentinel, field.serialization_exclude_if.as_ref())?
-            || exclude_default(value, &state.extra, serializer)?
+            || exclude_default(value, state, serializer)?
         {
             return Ok(None);
         }
