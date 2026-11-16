@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
-use pyo3::types::{PyDateTime, PyDict, PyFloat, PyList, PyTime, PyTuple};
+use pyo3::types::{PyDateTime, PyDict, PyFloat, PyFrozenSet, PyList, PySet, PyTime, PyTuple};
 
 use ahash::AHashMap;
 use smallvec::SmallVec;
@@ -81,6 +81,30 @@ fn serialization_exclude_if(exclude_if_callable: Option<&Py<PyAny>>, value: &Bou
     Ok(false)
 }
 
+fn matches_unordered_default<'py>(
+    values: impl Iterator<Item = Bound<'py, PyAny>>,
+    defaults: impl Iterator<Item = Bound<'py, PyAny>>,
+    py: Python<'py>,
+) -> PyResult<bool> {
+    // A set's own equality can match False with 0. Map each default element to
+    // its original object so a value's equality lookup exposes the actual type.
+    let lookup = PyDict::new(py);
+    for default in defaults {
+        lookup.set_item(&default, &default)?;
+    }
+    let mut count = 0;
+    for value in values {
+        count += 1;
+        let Some(default) = lookup.get_item(&value)? else {
+            return Ok(false);
+        };
+        if !matches_default(&value, &default)? {
+            return Ok(false);
+        }
+    }
+    Ok(count == lookup.len())
+}
+
 /// Python equality is weaker than serialization equality: nested `False == 0`,
 /// signed zero, Decimal precision, and equivalent instants with different UTC
 /// offsets can all produce different JSON. Preserve these values when excluding
@@ -123,6 +147,12 @@ fn matches_default(value: &Bound<'_, PyAny>, default: &Bound<'_, PyAny>) -> PyRe
                 Ok(matches && matches_default(&key, &default_key)? && matches_default(&item, &default)?)
             },
         );
+    }
+    if let Ok(items) = value.cast::<PySet>() {
+        return matches_unordered_default(items.iter(), default.cast::<PySet>()?.iter(), value.py());
+    }
+    if let Ok(items) = value.cast::<PyFrozenSet>() {
+        return matches_unordered_default(items.iter(), default.cast::<PyFrozenSet>()?.iter(), value.py());
     }
     if value.is_instance_of::<PyDateTime>()
         || value.is_instance_of::<PyTime>()

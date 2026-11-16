@@ -1430,6 +1430,19 @@ def test_exclude_defaults_roundtrips_nested_equal_values() -> None:
     assert Model().model_dump_json(exclude_defaults=True) == '{}'
 
 
+def test_exclude_defaults_preserves_equal_set_element_types() -> None:
+    """https://github.com/pydantic/pydantic/issues/14275"""
+
+    class Model(BaseModel):
+        numbers: set[Any] = {0}
+        frozen: frozenset[Any] = frozenset({0})
+
+    value = Model(numbers={False}, frozen=frozenset({False}))
+    assert value.model_dump_json() == '{"numbers":[false],"frozen":[false]}'
+    assert value.model_dump_json(exclude_defaults=True) == '{"numbers":[false],"frozen":[false]}'
+    assert Model(numbers={0}, frozen=frozenset({0})).model_dump_json(exclude_defaults=True) == '{}'
+
+
 def test_serialization_fallback() -> None:
     class Arbitrary:
         value = 1
