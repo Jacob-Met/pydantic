@@ -1407,6 +1407,17 @@ def test_field_serializers_use_enum_ref() -> None:
     assert m.model_dump()['computed_a_or_b'] == 'b'
 
 
+def test_exclude_defaults_complex_imaginary_signed_zero() -> None:
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    from pydantic import BaseModel
+
+    class Model(BaseModel):
+        value: complex = 0j
+
+    assert Model(value=complex(0, -0.0)).model_dump_json(exclude_defaults=True) == '{"value":"-0j"}'
+    assert Model(value=complex(-0.0, 0.0)).model_dump_json(exclude_defaults=True) == '{}'
+
+
 def test_exclude_defaults_field_serializer_keeps_model_field_context() -> None:
     """https://github.com/pydantic/pydantic/issues/14275"""
     from typing import Any

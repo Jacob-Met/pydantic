@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
-use pyo3::types::{PyDateTime, PyDict, PyFloat, PyFrozenSet, PyList, PySet, PyString, PyTime, PyTuple};
+use pyo3::types::{PyComplex, PyDateTime, PyDict, PyFloat, PyFrozenSet, PyList, PySet, PyString, PyTime, PyTuple};
 
 use ahash::AHashMap;
 use smallvec::SmallVec;
@@ -15,6 +15,7 @@ use crate::serializers::errors::unwrap_ser_error;
 use crate::serializers::extra::{IncludeExclude, SerCheck};
 use crate::serializers::shared::{DoSerialize, SerializeMap, serialize_to_json, serialize_to_python};
 use crate::serializers::type_serializers::any::AnySerializer;
+use crate::serializers::type_serializers::complex::complex_to_str;
 use crate::serializers::type_serializers::function::{FunctionPlainSerializer, FunctionWrapSerializer};
 use crate::serializers::{SerMode, SerializationState};
 
@@ -173,6 +174,11 @@ fn matches_default<'py>(
     }
     if value.is_instance_of::<PyFloat>() {
         return Ok(value.extract::<f64>()?.to_bits() == default.extract::<f64>()?.to_bits());
+    }
+    if let Ok(value_complex) = value.cast::<PyComplex>() {
+        // Python considers +0j and -0j equal, but the serializer preserves
+        // the sign of imaginary zero in its output string.
+        return Ok(complex_to_str(value_complex) == complex_to_str(default.cast::<PyComplex>()?));
     }
     if let Ok(items) = value.cast::<PyList>() {
         let defaults = default.cast::<PyList>()?;
