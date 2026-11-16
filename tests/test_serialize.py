@@ -1407,6 +1407,26 @@ def test_field_serializers_use_enum_ref() -> None:
     assert m.model_dump()['computed_a_or_b'] == 'b'
 
 
+def test_exclude_defaults_omits_equal_arbitrary_type_defaults() -> None:
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    from pydantic import BaseModel, ConfigDict
+
+    class Custom:
+        def __init__(self, value: int):
+            self.value = value
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, Custom) and self.value == other.value
+
+    class Model(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+        obj: Custom = Custom(1)
+
+    model = Model(obj=Custom(1))
+    assert model.model_dump(exclude_defaults=True) == {}
+    assert model.model_dump_json(exclude_defaults=True) == '{}'
+
+
 def test_exclude_defaults_roundtrips_nested_equal_values() -> None:
     """https://github.com/pydantic/pydantic/issues/14275"""
     from datetime import UTC, datetime, timedelta, timezone

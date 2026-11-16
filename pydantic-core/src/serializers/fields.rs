@@ -205,6 +205,11 @@ fn matches_default<'py>(
             Some(serializer) => serializer.to_python(default, &mut default_state),
             None => infer_to_python(default, &mut default_state),
         };
+        // When neither equal value has a JSON representation, omitting the
+        // default must not force an otherwise unnecessary serialization error.
+        if converted_value.is_err() && converted_default.is_err() {
+            return Ok(true);
+        }
         if let (Ok(converted_value), Ok(converted_default)) = (converted_value, converted_default) {
             let converted_value = converted_value.bind(value.py());
             let converted_default = converted_default.bind(value.py());

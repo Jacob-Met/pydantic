@@ -227,6 +227,38 @@ def test_exclude_default_keeps_distinct_numeric_values():
     assert negative_zero_default.to_json({'z': -0.0}, exclude_defaults=True) == b'{}'
 
 
+def test_exclude_defaults_equal_custom_values_without_json_serializer():
+    """https://github.com/pydantic/pydantic/issues/14275"""
+
+    class Custom:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def __eq__(self, other):
+            return isinstance(other, Custom) and self.tag[0] == other.tag[0]
+
+    serializer = SchemaSerializer(
+        core_schema.typed_dict_schema(
+            {
+                'obj': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(core_schema.any_schema(), default=Custom('a1'))
+                )
+            }
+        )
+    )
+    equal = Custom('a2')
+    assert serializer.to_python({'obj': equal}, exclude_defaults=True) == {}
+    assert serializer.to_json({'obj': equal}, exclude_defaults=True) == b'{}'
+
+    # With an actual JSON fallback, equal Python values can serialize differently.
+    fallback = lambda obj: {'tag': obj.tag}
+    assert serializer.to_json({'obj': equal}, exclude_defaults=True, fallback=fallback) == b'{"obj":{"tag":"a2"}}'
+    assert serializer.to_python({'obj': equal}, mode='json', exclude_defaults=True, fallback=fallback) == {
+        'obj': {'tag': 'a2'}
+    }
+    assert serializer.to_json({'obj': Custom('a1')}, exclude_defaults=True, fallback=fallback) == b'{}'
+
+
 @pytest.mark.parametrize('container', [set, frozenset])
 def test_exclude_defaults_preserves_set_json_element_order(container):
     """https://github.com/pydantic/pydantic/issues/14275"""
