@@ -925,8 +925,9 @@ print(user.model_dump(exclude={'hobbies': {'__all__': {'info'}}}))
 When using the [serialization methods](#serializing-data), it is possible to exclude fields based on their value,
 using the following parameters:
 
-* `exclude_defaults`: Exclude all fields whose value compares equal to the default value
-  (using the equality (`==`) comparison operator).
+* `exclude_defaults`: Exclude fields that match their default values. Equality (`==`) is used, but
+  fields with different concrete Python types are retained, as are floats with different sign bits
+  (for example, `0.0` and `-0.0`), because these values can serialize differently.
 * `exclude_none`: Exclude all fields whose value is `None`.
 * `exclude_unset`: Pydantic keeps track of fields that were *explicitly* set during instantiation (using the
   [`model_fields_set`][pydantic.BaseModel.model_fields_set] property). Using `exclude_unset`, any field that
