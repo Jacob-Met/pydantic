@@ -250,8 +250,11 @@ impl GeneralFieldsSerializer {
                     used_req_fields += 1;
                 }
 
+                let preserve_discriminator = state.preserved_discriminator.as_ref().is_some_and(|(target, names)| {
+                    target.is(model) && names.iter().any(|name| name.as_str() == &*field.key)
+                });
                 let Some((serializer, next_include_exclude)) =
-                    self.prepare_value(&key, &value, field, state, missing_sentinel)?
+                    self.prepare_value(&key, &value, field, state, missing_sentinel, preserve_discriminator)?
                 else {
                     // field was excluded
                     continue;
@@ -300,6 +303,7 @@ impl GeneralFieldsSerializer {
         field: &'s SerField,
         state: &SerializationState<'py>,
         missing_sentinel: &Bound<'py, PyAny>,
+        preserve_discriminator: bool,
     ) -> PyResult<Option<(&'s Arc<CombinedSerializer>, IncludeExclude<'py>)>> {
         // if field excluded at schema level, this is the cheapest exclusion
         let Some(serializer) = field.serializer.as_ref() else {
@@ -313,7 +317,7 @@ impl GeneralFieldsSerializer {
 
         // filtering on the value
         if exclude_field_by_value(value, state, missing_sentinel, field.serialization_exclude_if.as_ref())?
-            || exclude_default(value, &state.extra, serializer)?
+            || (!preserve_discriminator && exclude_default(value, &state.extra, serializer)?)
         {
             return Ok(None);
         }
