@@ -120,8 +120,13 @@ impl BuildSerializer for FunctionPlainSerializer {
         };
 
         let when_used = WhenUsed::new(&ser_schema, WhenUsed::Always)?;
+        // A field's default still belongs to the outer schema even when a
+        // function serializer replaces its normal serialization path.
+        // Retain its serializer to retrieve defaults for exclusion.
+        let outer_type: Bound<'_, PyString> = schema.get_as_req(intern!(py, "type"))?;
+        let has_default = outer_type.to_str()? == "default";
         let fallback_serializer = match when_used {
-            WhenUsed::Always => None,
+            WhenUsed::Always if !has_default => None,
             _ => {
                 let new_schema = copy_outer_schema(schema)?;
                 Some(CombinedSerializer::build(&new_schema, config, definitions)?)
@@ -144,6 +149,13 @@ impl BuildSerializer for FunctionPlainSerializer {
 }
 
 impl FunctionPlainSerializer {
+    fn get_field_default(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
+        match &self.fallback_serializer {
+            Some(serializer) => serializer.get_default(py),
+            None => Ok(None),
+        }
+    }
+
     fn call<'py>(&self, value: &Bound<'py, PyAny>, state: &mut SerializationState<'py>) -> PyResult<(bool, Py<PyAny>)> {
         let py = value.py();
         if self.when_used.should_use(value, &state.extra) {
@@ -275,6 +287,10 @@ macro_rules! function_type_serializer {
                 &self.name
             }
 
+            fn get_default(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
+                self.get_field_default(py)
+            }
+
             fn retry_with_lax_check(&self) -> bool {
                 self.retry_with_lax_check()
             }
@@ -380,6 +396,10 @@ impl BuildSerializer for FunctionWrapSerializer {
 }
 
 impl FunctionWrapSerializer {
+    fn get_field_default(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
+        self.serializer.get_default(py)
+    }
+
     fn call<'py>(&self, value: &Bound<'py, PyAny>, state: &mut SerializationState<'py>) -> PyResult<(bool, Py<PyAny>)> {
         let py = value.py();
         if self.when_used.should_use(value, &state.extra) {

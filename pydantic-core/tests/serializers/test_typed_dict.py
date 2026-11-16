@@ -227,6 +227,19 @@ def test_exclude_default_keeps_distinct_numeric_values():
     assert negative_zero_default.to_json({'z': -0.0}, exclude_defaults=True) == b'{}'
 
 
+def test_exclude_defaults_function_serializer_on_default_schema():
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    plain = core_schema.with_default_schema(
+        core_schema.int_schema(),
+        default=1,
+        serialization=core_schema.plain_serializer_function_ser_schema(lambda v: str(v)),
+    )
+    serializer = SchemaSerializer(core_schema.typed_dict_schema({'value': core_schema.typed_dict_field(plain)}))
+    assert serializer.to_json({'value': 1}, exclude_defaults=True) == b'{}'
+    assert serializer.to_python({'value': 1}, exclude_defaults=True) == {}
+    assert serializer.to_json({'value': 2}, exclude_defaults=True) == b'{"value":"2"}'
+
+
 def test_exclude_defaults_equal_custom_values_without_json_serializer():
     """https://github.com/pydantic/pydantic/issues/14275"""
 
@@ -257,6 +270,37 @@ def test_exclude_defaults_equal_custom_values_without_json_serializer():
         'obj': {'tag': 'a2'}
     }
     assert serializer.to_json({'obj': Custom('a1')}, exclude_defaults=True, fallback=fallback) == b'{}'
+
+
+@pytest.mark.parametrize('container', [set, frozenset])
+def test_exclude_defaults_custom_set_serializer_preserves_python_list_order(container):
+    """https://github.com/pydantic/pydantic/issues/14275"""
+
+    class CollidingStr(str):
+        def __hash__(self):
+            return 23
+
+    first, second = CollidingStr('first'), CollidingStr('second')
+    default = container([first, second])
+    changed = container([second, first])
+    assert default == changed
+    assert list(default) != list(changed)
+
+    item_schema = (
+        core_schema.set_schema(core_schema.any_schema())
+        if container is set
+        else core_schema.frozenset_schema(core_schema.any_schema())
+    )
+    item_schema['serialization'] = core_schema.plain_serializer_function_ser_schema(lambda items: list(items))
+    serializer = SchemaSerializer(
+        core_schema.typed_dict_schema(
+            {'items': core_schema.typed_dict_field(core_schema.with_default_schema(item_schema, default=default))}
+        )
+    )
+
+    assert serializer.to_python({'items': changed}, exclude_defaults=True) == {'items': list(changed)}
+    assert serializer.to_python({'items': default}, exclude_defaults=True) == {}
+    assert serializer.to_json({'items': changed}, exclude_defaults=True) == serializer.to_json({'items': changed})
 
 
 @pytest.mark.parametrize('container', [set, frozenset])
