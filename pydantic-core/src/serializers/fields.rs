@@ -87,6 +87,22 @@ fn matches_unordered_default<'py>(
     defaults: impl Iterator<Item = Bound<'py, PyAny>>,
     state: &SerializationState<'py>,
 ) -> PyResult<bool> {
+    // JSON serializes sets as arrays. Equal sets can still iterate in a
+    // different order, and omitting one would silently change the JSON array.
+    if matches!(&state.extra.mode, SerMode::Json) {
+        let values: Vec<_> = values.collect();
+        let defaults: Vec<_> = defaults.collect();
+        if values.len() != defaults.len() {
+            return Ok(false);
+        }
+        for (value, default) in values.iter().zip(defaults.iter()) {
+            if !matches_default(value, default, state, None)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+
     let py = state.py();
     // A set's own equality can match False with 0. Map each default element to
     // its original object so a value's equality lookup exposes the actual type.

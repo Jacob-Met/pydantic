@@ -227,6 +227,37 @@ def test_exclude_default_keeps_distinct_numeric_values():
     assert negative_zero_default.to_json({'z': -0.0}, exclude_defaults=True) == b'{}'
 
 
+@pytest.mark.parametrize('container', [set, frozenset])
+def test_exclude_defaults_preserves_set_json_element_order(container):
+    """https://github.com/pydantic/pydantic/issues/14275"""
+
+    class CollidingStr(str):
+        def __hash__(self):
+            return 23
+
+    first, second = CollidingStr('first'), CollidingStr('second')
+    default = container([first, second])
+    changed = container([second, first])
+    assert default == changed
+    assert list(default) != list(changed)
+
+    item_schema = (
+        core_schema.set_schema(core_schema.any_schema())
+        if container is set
+        else core_schema.frozenset_schema(core_schema.any_schema())
+    )
+    serializer = SchemaSerializer(
+        core_schema.typed_dict_schema(
+            {'items': core_schema.typed_dict_field(core_schema.with_default_schema(item_schema, default=default))}
+        )
+    )
+
+    assert serializer.to_python({'items': changed}, exclude_defaults=True) == {}
+    assert serializer.to_json({'items': default}, exclude_defaults=True) == b'{}'
+    assert serializer.to_json({'items': changed}, exclude_defaults=True) == serializer.to_json({'items': changed})
+    assert serializer.to_python({'items': changed}, mode='json', exclude_defaults=True) == {'items': list(changed)}
+
+
 def test_exclude_defaults_preserves_equal_but_distinct_nested_wire_values():
     """https://github.com/pydantic/pydantic/issues/14275"""
     from datetime import UTC, datetime, timedelta, timezone
