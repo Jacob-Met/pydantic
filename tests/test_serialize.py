@@ -1407,6 +1407,60 @@ def test_field_serializers_use_enum_ref() -> None:
     assert m.model_dump()['computed_a_or_b'] == 'b'
 
 
+def test_exclude_defaults_field_serializer_keeps_model_field_context() -> None:
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    from typing import Any
+
+    from pydantic import BaseModel, field_serializer
+
+    class CollidingStr(str):
+        def __hash__(self) -> int:
+            return 23
+
+    first, second = CollidingStr('first'), CollidingStr('second')
+    default = {first, second}
+    changed = set([second, first])
+    assert default == changed
+    assert list(default) != list(changed)
+
+    class Model(BaseModel):
+        items: set[Any] = default
+
+        @field_serializer('items')
+        def items_to_ordered_list(self, values: set[Any], info) -> list[str]:
+            return [info.field_name, *values]
+
+    model = Model.model_construct(items=changed)
+    expected = {'items': ['items', *changed]}
+    assert model.model_dump() == expected
+    assert model.model_dump(exclude_defaults=True) == expected
+    assert model.model_dump_json(exclude_defaults=True) == model.model_dump_json()
+    # Reusing the identical default preserves even its sequence representation.
+    assert Model.model_construct(items=default).model_dump(exclude_defaults=True) == {}
+
+
+def test_exclude_defaults_with_plain_and_wrap_field_serializers() -> None:
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    from pydantic import BaseModel, field_serializer
+
+    class Model(BaseModel):
+        x: int = 1
+        y: int = 2
+
+        @field_serializer('x')
+        def serialize_x(self, value: int) -> str:
+            return str(value)
+
+        @field_serializer('y', mode='wrap')
+        def serialize_y(self, value: int, handler) -> str:
+            return str(handler(value))
+
+    assert Model().model_dump(exclude_defaults=True) == {}
+    assert Model().model_dump_json(exclude_defaults=True) == '{}'
+    assert Model(x=1, y=3).model_dump(exclude_defaults=True) == {'y': '3'}
+    assert Model(x=1, y=3).model_dump_json(exclude_defaults=True) == '{"y":"3"}'
+
+
 def test_exclude_defaults_omits_equal_arbitrary_type_defaults() -> None:
     """https://github.com/pydantic/pydantic/issues/14275"""
     from pydantic import BaseModel, ConfigDict

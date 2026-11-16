@@ -18,6 +18,12 @@ pub struct WithDefaultSerializer {
     serializer: Arc<CombinedSerializer>,
 }
 
+impl WithDefaultSerializer {
+    pub(crate) fn inner_serializer(&self) -> &CombinedSerializer {
+        self.serializer.as_ref()
+    }
+}
+
 impl BuildSerializer for WithDefaultSerializer {
     const EXPECTED_TYPE: &'static str = "default";
 
