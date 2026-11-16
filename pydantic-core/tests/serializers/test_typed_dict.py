@@ -179,6 +179,32 @@ def test_exclude_default():
     assert v.to_json({'foo': 1, 'bar': b'[default]'}, exclude_defaults=True) == b'{"foo":1}'
 
 
+@pytest.mark.parametrize(
+    ('default', 'value', 'expected'),
+    [
+        (0j, complex(0, -0.0), b'{"value":"-0j"}'),
+        (complex(0, -0.0), 0j, b'{"value":"0j"}'),
+        (1 + 0j, complex(1, -0.0), b'{"value":"1-0j"}'),
+        (0j, complex(-0.0, 0.0), b'{}'),
+    ],
+)
+def test_exclude_defaults_complex_preserves_json_signed_zero(default, value, expected):
+    """https://github.com/pydantic/pydantic/issues/14275"""
+    serializer = SchemaSerializer(
+        core_schema.typed_dict_schema(
+            {
+                'value': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(core_schema.complex_schema(), default=default)
+                )
+            }
+        )
+    )
+    assert serializer.to_json({'value': value}, exclude_defaults=True) == expected
+    import json
+
+    assert serializer.to_python({'value': value}, mode='json', exclude_defaults=True) == json.loads(expected)
+
+
 def test_exclude_default_keeps_distinct_numeric_values():
     serializer = SchemaSerializer(
         core_schema.typed_dict_schema(
