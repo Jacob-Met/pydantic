@@ -179,6 +179,54 @@ def test_exclude_default():
     assert v.to_json({'foo': 1, 'bar': b'[default]'}, exclude_defaults=True) == b'{"foo":1}'
 
 
+def test_exclude_default_keeps_distinct_numeric_values():
+    serializer = SchemaSerializer(
+        core_schema.typed_dict_schema(
+            {
+                'flag': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(
+                        core_schema.union_schema([core_schema.bool_schema(), core_schema.int_schema()]), default=False
+                    )
+                ),
+                'code': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(
+                        core_schema.union_schema([core_schema.int_schema(), core_schema.bool_schema()]), default=1
+                    )
+                ),
+                'num': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(
+                        core_schema.union_schema([core_schema.int_schema(), core_schema.float_schema()]), default=0
+                    )
+                ),
+                'z': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(core_schema.float_schema(), default=0.0)
+                ),
+            }
+        )
+    )
+    values = {'flag': 0, 'code': True, 'num': 0.0, 'z': -0.0}
+    assert serializer.to_python(values, exclude_defaults=True) == values
+    assert serializer.to_python(values, exclude_defaults=True, mode='json') == values
+    assert serializer.to_json(values, exclude_defaults=True) == b'{"flag":0,"code":true,"num":0.0,"z":-0.0}'
+
+    defaults = {'flag': False, 'code': 1, 'num': 0, 'z': 0.0}
+    assert serializer.to_python(defaults, exclude_defaults=True) == {}
+    assert serializer.to_json(defaults, exclude_defaults=True) == b'{}'
+
+    # The inverse signed-zero difference must also be preserved.
+    negative_zero_default = SchemaSerializer(
+        core_schema.typed_dict_schema(
+            {
+                'z': core_schema.typed_dict_field(
+                    core_schema.with_default_schema(core_schema.float_schema(), default=-0.0)
+                )
+            }
+        )
+    )
+    assert negative_zero_default.to_json({'z': 0.0}, exclude_defaults=True) == b'{"z":0.0}'
+    assert negative_zero_default.to_json({'z': -0.0}, exclude_defaults=True) == b'{}'
+
+
 def test_function_plain_field_serializer_to_python():
     class Model(TypedDict):
         x: int

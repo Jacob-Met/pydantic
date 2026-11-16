@@ -5,6 +5,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
 use pyo3::types::PyDict;
+use pyo3::types::PyFloat;
 
 use ahash::AHashMap;
 use smallvec::SmallVec;
@@ -86,10 +87,16 @@ fn exclude_default<'py>(
     extra: &Extra<'py>,
     serializer: &CombinedSerializer,
 ) -> PyResult<bool> {
+    // Python equality can conflate values that serialize differently (False == 0).
     if extra.exclude_defaults
         && let Some(default) = serializer.get_default(value.py())?
-        && value.eq(default)?
+        && value.eq(&default)?
+        && value.get_type().is(&default.bind(value.py()).get_type())
     {
+        // Equal numeric values can serialize differently (e.g. -0.0 versus 0.0).
+        if value.is_instance_of::<PyFloat>() {
+            return Ok(value.extract::<f64>()?.to_bits() == default.extract::<f64>(value.py())?.to_bits());
+        }
         return Ok(true);
     }
     Ok(false)
