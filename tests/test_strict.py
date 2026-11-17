@@ -85,3 +85,98 @@ def test_parse_model_with_strict_config_disabled(ModelWithStrictConfig: type[Bas
         Model(a=1, b=2, c=3, d=4),
     ]
     assert all(v.model_dump() == {'a': 1, 'b': 2, 'c': 3, 'd': 4} for v in values)
+
+
+@pytest.mark.parametrize('strict_scope', ['field', 'annotated', 'config'])
+def test_nested_model_strict_respects_call_field_and_config(strict_scope: str) -> None:
+    """https://github.com/pydantic/pydantic/issues/14269"""
+    import json
+    from types import MappingProxyType
+
+    from pydantic import Strict
+
+    class Inner(BaseModel):
+        x: int
+
+    class FieldOuter(BaseModel):
+        inner: Inner = Field(strict=True)
+
+    class AnnotatedOuter(BaseModel):
+        inner: Annotated[Inner, Strict()]
+
+    class ConfigOuter(BaseModel):
+        model_config = ConfigDict(strict=True)
+        inner: Inner
+
+    outer = {'field': FieldOuter, 'annotated': AnnotatedOuter, 'config': ConfigOuter}[strict_scope]
+
+    # Python dicts remain valid model inputs, as for call-level strict=True.
+    for validate in (lambda value: outer(inner=value), lambda value: outer.model_validate({'inner': value})):
+        assert validate({'x': 1}).inner.x == 1
+        assert validate(Inner(x=1)).inner.x == 1
+        with pytest.raises(ValidationError) as e:
+            validate({'x': '1'})
+        assert e.value.errors()[0]['type'] == 'int_type'
+        with pytest.raises(ValidationError) as e:
+            validate(MappingProxyType({'x': 1}))
+        assert e.value.errors()[0]['type'] == 'model_type'
+
+    with pytest.raises(ValidationError, match='int_type'):
+        outer.model_validate_json(json.dumps({'inner': {'x': '1'}}))
+    assert outer.model_validate_json(json.dumps({'inner': {'x': 1}})).inner.x == 1
+
+    # An explicit strict=False validation call overrides the default.
+    assert outer.model_validate({'inner': {'x': '1'}}, strict=False).inner.x == 1
+    assert outer.model_validate({'inner': MappingProxyType({'x': 1})}, strict=False).inner.x == 1
+
+
+def test_nested_strict_config_can_be_relaxed_per_field() -> None:
+    """https://github.com/pydantic/pydantic/issues/14269"""
+
+    class Inner(BaseModel):
+        x: int
+
+    class Outer(BaseModel):
+        model_config = ConfigDict(strict=True)
+        strict_inner: Inner
+        lax_inner: Inner = Field(strict=False)
+
+    instance = Outer(strict_inner={'x': 1}, lax_inner={'x': '2'})
+    assert instance.strict_inner.x == 1
+    assert instance.lax_inner.x == 2
+    with pytest.raises(ValidationError, match='int_type'):
+        Outer(strict_inner={'x': '1'}, lax_inner={'x': '2'})
+
+
+def test_nested_strict_config_propagates_into_recursive_model() -> None:
+    """https://github.com/pydantic/pydantic/issues/14269"""
+
+    class Tree(BaseModel):
+        value: int
+        child: 'Tree | None' = None
+
+    class StrictContainer(BaseModel):
+        model_config = ConfigDict(strict=True)
+        tree: Tree
+
+    with pytest.raises(ValidationError, match='int_type'):
+        StrictContainer.model_validate({'tree': {'value': 1, 'child': {'value': '2'}}})
+
+    assert StrictContainer.model_validate({'tree': {'value': 1, 'child': {'value': 2}}}).tree.child.value == 2
+
+
+def test_lax_parent_config_does_not_weaken_strict_nested_model() -> None:
+    """https://github.com/pydantic/pydantic/issues/14269"""
+
+    class Inner(BaseModel):
+        model_config = ConfigDict(strict=True)
+        x: int
+
+    class Outer(BaseModel):
+        model_config = ConfigDict(strict=False)
+        inner: Inner
+
+    with pytest.raises(ValidationError, match='int_type'):
+        Outer(inner={'x': '1'})
+    assert Outer(inner={'x': 1}).inner.x == 1
+    assert Outer.model_validate({'inner': {'x': '1'}}, strict=False).inner.x == 1

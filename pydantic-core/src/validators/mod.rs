@@ -547,7 +547,8 @@ fn build_validator_inner(
     let type_ = type_.to_str()?;
 
     // if we have a SchemaValidator on the type already, use it
-    if use_prebuilt && let Ok(Some(prebuilt_validator)) = prebuilt::PrebuiltValidator::try_get_from_schema(type_, dict)
+    if use_prebuilt
+        && let Ok(Some(prebuilt_validator)) = prebuilt::PrebuiltValidator::try_get_from_schema(type_, dict, config)
     {
         return Ok(Arc::new(prebuilt_validator));
     }

@@ -61,6 +61,9 @@ pub struct ModelValidator {
     frozen: bool,
     custom_init: bool,
     root_model: bool,
+    // A field- or parent-configured strictness default for nested models.
+    // An explicit validate_python(strict=...) call still takes precedence.
+    nested_strict: Option<bool>,
     undefined: Py<PyAny>,
     name: String,
 }
@@ -74,7 +77,23 @@ impl BuildValidator for ModelValidator {
         definitions: &mut DefinitionsBuilder<Arc<CombinedValidator>>,
     ) -> PyResult<Arc<CombinedValidator>> {
         let py = schema.py();
-        // models ignore the parent config and always use the config from this model
+        // A model's own config governs its fields.  However, when the model
+        // is *nested*, strictness explicitly set on the field or on the
+        // containing model should also govern validation of the nested data.
+        // Keep root model_schema(strict=True) behavior unchanged.
+        let nested_strict = if _config.is_some() {
+            match schema_or_config_same::<bool>(schema, _config, intern!(py, "strict"))? {
+                // An explicit strict=False on the field can relax an
+                // otherwise strict enclosing model.
+                Some(value) if schema.contains(intern!(py, "strict"))? => Some(value),
+                // A lax parent config does not weaken the nested model's
+                // own ConfigDict(strict=True).
+                Some(true) => Some(true),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let config = schema.get_as(intern!(py, "config"))?;
 
         let class: Bound<'_, PyType> = schema.get_as_req(intern!(py, "cls"))?;
@@ -101,6 +120,7 @@ impl BuildValidator for ModelValidator {
             frozen: schema.get_as(intern!(py, "frozen"))?.unwrap_or(false),
             custom_init: schema.get_as(intern!(py, "custom_init"))?.unwrap_or(false),
             root_model: schema.get_as(intern!(py, "root_model"))?.unwrap_or(false),
+            nested_strict,
             undefined: PydanticUndefinedType::get(py).clone_ref(schema.py()).into_any(),
             // Get the class's `__name__`, not using `class.qualname()`
             name,
@@ -301,6 +321,26 @@ impl ModelValidator {
     }
 
     fn validate_construct<'py>(
+        &self,
+        py: Python<'py>,
+        input: &(impl Input<'py> + ?Sized),
+        existing_fields_set: Option<&Bound<'_, PyAny>>,
+        state: &mut ValidationState<'_, 'py>,
+    ) -> ValResult<Py<PyAny>> {
+        // A per-call strict=True/False always wins.  Otherwise propagate the
+        // nested field/config strictness through the entire model subtree,
+        // including recursive definition references.  The rebinding is
+        // scoped, so siblings cannot inherit each other's strictness.
+        if let Some(strict) = self.nested_strict
+            && state.extra().strict.is_none()
+        {
+            let state = &mut state.rebind_extra(|extra| extra.strict = Some(strict));
+            return self.validate_construct_inner(py, input, existing_fields_set, state);
+        }
+        self.validate_construct_inner(py, input, existing_fields_set, state)
+    }
+
+    fn validate_construct_inner<'py>(
         &self,
         py: Python<'py>,
         input: &(impl Input<'py> + ?Sized),
